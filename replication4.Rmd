@@ -12,10 +12,15 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 # Attaching only the necessary libraries
 library(dplyr)
 library(tidyverse)
+library(stargazer)
+library(apsrtable)
+library(Zelig)
+library(simpleboot)
+library(boot)
 ```
 
 # Abstract
-I replicate "What the Demolition of Public Housing Teaches Us about the Impact of Racial Threat on Political Behavior” (@enos_paper) using data and code provided by the creators of (@enos_paper) which can be found in their relevant Harvard Dataverse directory (@enos_data). Currently, there are 6 figures with figures 4 and 5 consistenting of 2 sub-figures. At present, I am unable to replicate table 1 in the original paper in this replication because I was unable to find the relevant dataset in the Dataverse.
+I replicate "What the Demolition of Public Housing Teaches Us about the Impact of Racial Threat on Political Behavior” (@enos_paper) using data and code provided by the creators of (@enos_paper) which can be found in their relevant Harvard Dataverse directory (@enos_data). I was able to create a replication of the 6 figures in the original publication with figures 4 and 5 consistenting of 2 sub-figures and also included table 1. 
 
 ```{r config}
 # Graphics parameters to make output pretty
@@ -519,5 +524,130 @@ axis(side = 2,
      cex.axis = cex.axis)
 ```
 *Note*: Differences in weighted mean Obama vote for precincts with $d \leq 1,000$ for de- molished projects and matched precincts with $d \leq 1,000$ for nondemolished projects for white voters (white circles) and black voters (black circles).
+
+\newpage
+# Extension: Table 1
+```{r turnout, cache=TRUE}
+### Estimate the quantities for the turnout section of Enos Chicago AJPS
+### [turnout.r]
+
+# Reading in the data for use in table 1
+data <- read.csv("dataverse_files/data.turnout.csv")
+
+# Changing some data as factors for use in the table creation
+data$reg <- as.Date(data$reg)
+data$p   <- as.factor(data$p)
+data$s   <- as.factor(data$s)
+
+# This increments the distances in meters by 100m at a time.
+# Distances used repeatedly in estimation below.
+dists <- seq(from = 100, to = 1000, by = 100)
+
+# Create percentages for the probability of a name. The increments are variable
+# depending on how close to 1 the percentage is.
+namepcts <- c(seq(from = .91, to = .96, by = .01),.975,.99,1)
+
+# Matrices for storing results. Assigning the same blank matrix to all of the treatment variables to initialize them so they can take on a value later on in the code.
+res.mat <- matrix(nrow = length(namepcts), ncol = length(dists))
+white.treat.N <- res.mat
+white.treat.effect.mean.boot <- res.mat
+white.treat.effect.conf.boot.lower <- res.mat
+white.treat.effect.conf.boot.upper <- res.mat
+black.treat.N <- res.mat
+black.treat.effect.mean.boot <- res.mat
+black.treat.effect.conf.boot.lower <- res.mat
+black.treat.effect.conf.boot.upper <- res.mat
+
+# From replication: "Registration is Illionis is cutoff 27 days prior to election day, limit to these individuals." I.e., ignore individuals who are not registered? This is a poor way to segment data...
+
+# Registration in Illionis is cutoff 27 days prior to election day, limit to
+# these individuals. This makes sure that only the people eligible to vote are
+# included in the calculation of the change in voter turnout over time.
+use.data <- filter(data, reg < "2000-10-10" & is.na(data$reg) == F)
+
+# Loop through definitions of white and distances and estimate at each combination.
+for(j in 1:length(namepcts)){
+  # Define a treatment and control group for each name percent
+	useW <- filter(use.data, whitename >= namepcts[j])
+	useB <- filter(use.data, blackname >= namepcts[j])
+  
+	# Assigning values to the treatments initalized for those names that are above
+	# the threshold specified in namepcts
+  for(h in 1:length(dists)){
+    Wtreat <- filter(useW, demo.distance <= dists[h])
+    Btreat <- filter(useB, demo.distance <= dists[h])
+    Wcont  <- filter(useW, demo.distance > dists[h])
+    Bcont  <- filter(useB, demo.distance > dists[h])
+    white.treat.N[j, h] <- nrow(Wtreat)
+    black.treat.N[j, h] <- nrow(Btreat)
+        	
+    # For white and black subjects, perform t test of differences of means.
+    # White subjects
+		if(white.treat.N[j, h] > 0){
+		  white.boot <- two.boot((Wtreat$vote2004-Wtreat$vote2000),
+		                         (Wcont$vote2004-Wcont$vote2000), 
+		                         mean, R = 2, na.rm = T)
+			white.treat.effect.mean.boot[j, h] <- white.boot$t0
+			white.boot.ci <- boot.ci(white.boot, type = 'basic')
+			white.treat.effect.conf.boot.lower[j, h] <- white.boot.ci$basic[4]
+			white.treat.effect.conf.boot.upper[j, h] <- white.boot.ci$basic[5]
+			}
+		
+    # Black subjects
+    if(black.treat.N[j,h] > 0){
+			black.boot <- two.boot((Btreat$vote2004-Btreat$vote2000),
+			                       (Bcont$vote2004-Bcont$vote2000),
+			                       mean, R = 2, na.rm = T)
+			black.treat.effect.mean.boot[j, h] <- black.boot$t0
+			black.boot.ci <- boot.ci(black.boot, type = 'basic')
+			black.treat.effect.conf.boot.lower[j, h] <- black.boot.ci$basic[4]
+			black.treat.effect.conf.boot.upper[j, h] <- black.boot.ci$basic[5]
+			}
+		}
+	}
+```
+
+```{r simulation, results='asis', cache=TRUE}
+### Create predicted effects for distance and context changes.
+
+# Define data for whites used in an earlier portion of the replication code (parallel trends test).
+white.data <- data[as.Date(data$reg) < "2000-10-10" & is.na(data$reg) == F, ]
+
+# Use subjects who qualify by name pcts which is above the threshold of
+# certainty of their race determined using Bayesian methods.
+white.data <- filter(white.data, whitename >= 0.975)
+
+# While I don't like this use convention as it overwrites pre-existing usedata
+# variables, it is widely used throughout this code document.
+usedata <- white.data
+
+# Create chunks for estimation for distance and area.
+distances <- seq(from = 10, to = 2000, by = 10)
+areas     <- seq(from = 0, to = 1, length.out = length(distances))
+			      
+# Storage bin
+outmat.s <- matrix(ncol = 5, nrow = 0)
+outmat.d <- matrix(ncol = 5, nrow = 0)
+
+# Regression used in the creation of the table
+out.reg <- lm(vote2004 ~ log(demo.distance) + log(context_black) + vote2000, 
+              data = usedata)
+
+### Table 1 output
+# Run a regular regression again so we can print the results.
+# The degrees of freedom didn't calculate properly and was off by 4 from the
+# actual. Not quite sure why this happened or how to resolve it.
+
+# Creating table 1
+stargazer(out.reg, header = FALSE, 
+          style = "apsr", omit.stat = c("ll", "adj.rsq", "F", "ser", "bic", "aic"),
+          covariate.labels = c("Log(distance)", 
+                               "Log(percent of local black population)", 
+                               "2000 turnout"),
+          dep.var.labels = "2004 Turnout",
+          title = "Regression of Turnout on Distance and Population Size")
+```
+
+Notes: OLS regression of 2004 voter turnout on listed variables for white voters. The local African American population is represented by the total number of African Americans within 1 kilometer of the project. The population of the housing projects is represented by the African American population of the census blocks containing the projects. The percent of the local African American population living in the demolished projects is these two quantities expressed as a proportion. Standard errors are listed in parentheses. All coefficients are significant at p < .0001.
 
 # References
